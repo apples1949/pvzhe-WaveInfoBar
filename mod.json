@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 2,
+  "id": "waveinfobar",
+  "name": "波次进度栏",
+  "version": "1.0.0",
+  "author": "apples1949",
+  "description": "战斗底部进度栏增强：在关卡名称左侧显示「总波次 / 当前波次」，进度栏可拉长（100%~300%），并在栏上叠加 | 作为小波次刻度。位置与长度都能在「选项 → 战斗设置」里点「波次进度栏 · 位置」按钮调整（与其他 Mod 的列并排，互不覆盖）。",
+  "playInstructions": "1. 进关卡后，底部进度栏左边会多出「总 10 波 · 当前第 3 波」这样的波次消息。\n2. 进度栏默认拉长到 180%，栏上有 | 刻度表示每个小波。\n3. 改位置/长度：选项 → 战斗设置（设置植物僵尸血条那一页）→ 点「波次进度栏 · 位置」→ 选预设（右下/左下/中下/自定义）或拖动 X、Y、长度滑动条 → 点「确定」。\n4. 也可以在「选项 → Mod 管理 → 波次进度栏 → 配置」里改同样几项。",
+  "dependencies": [],
+  "conflicts": [],
+  "provides": {},
+  "overrides": {},
+  "scripts": [],
+  "settings": [
+    {
+      "key": "showWaveText",
+      "type": "bool",
+      "label": "显示波次消息",
+      "group": "显示",
+      "description": "在关卡名称左侧显示总波次与当前波次。关掉后进度栏保持原样（仍会按下面设置拉长）。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "waveTextFormat",
+      "type": "enum",
+      "label": "波次消息格式",
+      "group": "显示",
+      "description": "完整：总 10 波 · 当前第 3 波；简洁：3/10。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": "full",
+      "options": [
+        {
+          "value": "full",
+          "label": "完整（总 10 波 · 当前第 3 波）"
+        },
+        {
+          "value": "compact",
+          "label": "简洁（3/10）"
+        }
+      ]
+    },
+    {
+      "key": "barScale",
+      "type": "int",
+      "label": "进度栏长度（%）",
+      "group": "显示",
+      "default": 180,
+      "min": 100,
+      "max": 300,
+      "step": 10,
+      "description": "100 = 游戏原长，300 = 三倍长。变长时右端不动、向左延伸，不会超出屏幕。",
+      "applyMode": "immediate",
+      "affectsGameplay": false
+    },
+    {
+      "key": "showTicks",
+      "type": "bool",
+      "label": "显示 | 小波次刻度",
+      "group": "显示",
+      "description": "在进度栏上按波数均分画出 | 刻度（每一小波一个刻度）。关掉只保留游戏原生的大波旗子。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "positionMode",
+      "type": "enum",
+      "label": "位置预设",
+      "group": "位置",
+      "description": "整块（波次消息 + 关卡名 + 进度栏）一起移动；右下 = 游戏原位置。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": "default",
+      "options": [
+        {
+          "value": "default",
+          "label": "右下（游戏原位置）"
+        },
+        {
+          "value": "left",
+          "label": "左下"
+        },
+        {
+          "value": "center",
+          "label": "中下（居中）"
+        },
+        {
+          "value": "custom",
+          "label": "自定义（用下面 X / Y）"
+        }
+      ]
+    },
+    {
+      "key": "customX",
+      "type": "int",
+      "label": "自定义 X（%）",
+      "group": "位置",
+      "default": 2,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "description": "整块左边缘，按屏幕宽度百分比（0 = 最左）。自动夹具不会越出屏幕。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "visibleWhen": {
+        "key": "positionMode",
+        "op": "eq",
+        "value": "custom"
+      }
+    },
+    {
+      "key": "customY",
+      "type": "int",
+      "label": "自定义 Y（%）",
+      "group": "位置",
+      "default": 94,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "description": "整块上边缘，按屏幕高度百分比（0 = 最上）。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "visibleWhen": {
+        "key": "positionMode",
+        "op": "eq",
+        "value": "custom"
+      }
+    },
+    {
+      "key": "enableLog",
+      "type": "bool",
+      "label": "输出诊断日志",
+      "group": "诊断",
+      "description": "排查问题时打开，会把运行状态写进 godot.log。平时关掉，不刷日志。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": false
+    },
+    {
+      "key": "aboutChangelog",
+      "type": "text",
+      "label": "更新内容",
+      "group": "关于",
+      "content": "v1.0.0 · 2026-10-20\n新增：底部进度栏左侧显示总波次 / 当前波次（两种格式）。\n新增：进度栏可拉长 100%~300%（右端固定，向左延伸）。\n新增：进度栏上叠加 | 作为小波次刻度（数量跟随总波数）。\n新增：战斗设置页「波次进度栏 · 位置」按钮，打开面板可设预设位置 / X / Y / 长度并点确定；与其他 Mod 的列并排，互不覆盖。"
+    },
+    {
+      "key": "aboutAuthor",
+      "type": "richtext",
+      "label": "作者与链接",
+      "group": "关于",
+      "content": "波次进度栏 v1.0.0 · 作者：apples1949\n\n[url=https://space.bilibili.com/186773722]B 站空间[/url]\n[url=https://apples1949.lanzouc.com/b007uuknqd]蓝奏云下载（密码 762b）[/url]\n\n本模组为玩家自制 Mod，与《植物大战僵尸杂交重制版》官方无隶属关系。"
+    }
+  ],
+  "runtimeAssembly": "Runtime/ModAssembly.dll",
+  "runtimeEntryType": "WaveInfoBarEntry",
+  "runtimeApiVersion": 3,
+  "runtimeAssemblyPolicy": "optional",
+  "blueprints": [],
+  "translations": [],
+  "resources": [
+    "Runtime/ModAssembly.dll"
+  ]
+}
