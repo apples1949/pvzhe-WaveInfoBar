@@ -64,13 +64,39 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	/// 语义一致；而且**不再新增列**就能少占 220px —— 这一页已经有 5 列（原生 + 血条 2 列 + 位置 + 时停），
 	/// 再各加一列很容易把页面挤出屏幕。
 	/// </summary>
-	private const string OptionColumnName = BattleOptionColumns.PosEditorColName;
+	/// <summary>
+	/// 战斗设置页用的列 = **ModCol4（时停那一列）**。
+	/// 用户要求：「波次栏位置」要和「时停·卡槽触发面板 / CD开关设置面板 / 改键面板」竖排同列。
+	/// 该列已存在 ⇒ 只加按钮，不新增列宽（不会把页面撑出 1080 视口）。
+	/// </summary>
+	private const string OptionColumnName = BattleOptionColumns.TimeStopColName;
+
+	/// <summary>
+	/// 刻度小旗 PNG 的 base64（25×25 绿色；由解包 `FlagMeterFlag.png` 红→绿而来）。
+	/// ★ 编进程序集而不是放 Resources/：实测加载器解包后 `PackageRoot + "Resources/..."` 读不到，
+	///   会退化成绿线（用户看到"绿条不是旗子"）。内嵌后彻底不依赖解包路径。
+	/// </summary>
+	private const string TickFlagPngB64 =
+		"iVBORw0KGgoAAAANSUhEUgAAABkAAAAZCAYAAADE6YVjAAAC/klEQVR4nO2UXWhTZxjHf2lzyDE9SerJbCz5KJkFh/ZC2ahjyFqLZIKKImVQhigOb/XOCy8Ebwdj4IW3Y8jGtqtONi2RFiwIteimYq1Vo6TtkpzaHk+Tk9Rz0pMjTTu64knDxN31B+978bwfz/P+/w8vwGXAfk/jMg64lhaP28epR24mh+SWkGSp5p4rriv/3LkG99Kk2ApJM7lmQUgKlEfKtMXbyKt5NEvDFm3oBEEVKCfKdQtbk8S2l166TOv9Voxhg55wD8EvgpzPxyj7ijRuauRSu87Va1dJTadgElytLuyDq2dr0VCdVxSVB2QarzeSiCYwt5gM9A9wJj9KsVKhODPH9ONpboSPkT78LYmmBNKfEt5fvKuO1KDqyX5zPxP9E4TGQ2wObibWFePmTzfp/bKX0w8NDqR/Z1f3Lsy/TNgN2dEs3Ye60QoaQ4ND5Dpz6J/osGyXsydW2aIyVsEX9/HoziMyeoYbe09zdvIWF5uaCQQCPLn1BL/kJ+KOsOOzHWQfZJn4e4KODzsoZAroZX19TxaNRUpGCX/UT2g+hLggEtziI/1HmtjnMdqsNjy2B7fgZnxgHFM2+V7s4iu9QPO2Zir9FdhXR6496T3MvpxFvaQibhLpO9XH7dHbRPdGEQwBq2QxNTbFr7F9XGjKMqfO4RE8KHmFzNMMmkcj15eDdme5qsa/nn9NihSvzrxCFVTUikogHmDwu0FO3mthJDnCD609fM0dhpPDKAUFwSsgfyBXpS4sFECr010L2sLyJg2MowZDPw8hhSTiXXF2hpuYeT6DvWggNotYbouIL4IyrzD5bBL5IxmxQ1w3SVWu6G9RpspTq8FhF0EzSPv2dgKRAEW1SHh3GNuy+ebFVs7Fcty9fhfFUNA//Zfhvc5yVZOEfgyhLCrOVTxzEfQHMXWTUqpEg9yA+bHpXPIJ5yTV7jIKBljO5+ytNrPMghdoWQnW7taa2P/3L7yEfeTYuTofg2PDeAE/IDpJ9JZc70AFKP2XijbYYAPW5Q1nSlSbg9xvOQAAAABJRU5ErkJggg==";
+
+	/// <summary>
+	/// 旗子升起后的边长 = **25px**，与游戏自带大红旗的贴图原尺寸一致（用户要求"和红旗一样大"）。
+	/// 栏高 23 ⇒ 升起时底边抬到栏内 14px 处，旗面上沿露出栏顶约 11px。
+	/// </summary>
+	private const float TickFlagSize = 25f;
+	/// <summary>未升起时的边长（14px，整面缩在栏内，表示这一波还没打完）。</summary>
+	private const float TickFlagSizeDown = 14f;
+	/// <summary>升起后旗子底边的 y（栏内 14px；未升起时底边贴栏底 23）。</summary>
+	private const float TickFlagBottomUp = 14f;
+	/// <summary>每帧朝目标靠拢的比例（约 0.3 秒升到位）。</summary>
+	private const float TickRiseLerp = 0.22f;
 
 	// 配置键（与 mod.json 的 settings 一一对应；键写错 = 宿主拒绝保存）
 	private const string KShowWaveText = "showWaveText";
 	private const string KWaveTextFormat = "waveTextFormat";
 	private const string KBarScale = "barScale";
 	private const string KShowTicks = "showTicks";
+	private const string KTickStyle = "tickStyle";
 	private const string KPositionMode = "positionMode";
 	private const string KCustomX = "customX";
 	private const string KCustomY = "customY";
@@ -94,9 +120,13 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	private string _textFormat = "full";
 	private int _barScale = 180;
 	private bool _showTicks = true;
+	private string _tickStyle = "flag";
+	private string _appliedTickStyle = "";
 	private string _posMode = "default";
 	private int _posX = 2;
 	private int _posY = 94;
+	private int _appliedFontSize = -1;
+	private readonly Dictionary<string, double> _localEditUntil = new Dictionary<string, double>();
 
 	// 当前 UI 缓存（每关重建，靠实例 id 失效）
 	private TowerDefenseProgressManager _mgr;
@@ -111,7 +141,12 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	private TextureRect _decoBar;
 	private Label _progressText;
 	private Control _tickRoot;
-	private readonly List<Label> _ticks = new List<Label>();
+	private readonly List<Control> _ticks = new List<Control>();
+	/// <summary>每面旗的升起进度（0 = 未升起 / 1 = 已完全升起）。</summary>
+	private readonly List<float> _tickRise = new List<float>();
+	/// <summary>刻度贴图（从内嵌 base64 解码，只做一次）。</summary>
+	private Texture2D _tickTex;
+	private bool _tickTexTried;
 	private int _appliedBarWidth = -1;
 
 	// 位置缓存（每帧算，变化才写，避免每帧触发布局）
@@ -173,7 +208,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			//   "本 Mod 真的被加载并且入口跑起来了"（排查"装了没反应"时最省事的一条证据）。
 			try
 			{
-				GD.Print("[WaveInfoBar] v1.0.0 ready（进度栏波次消息 + | 刻度 + 位置面板；enableLog="
+				GD.Print("[WaveInfoBar] v1.8.0 ready（波次消息 + 旗帜刻度 + 位置与样式面板；enableLog="
 					+ (BattlePanelKit.LogEnabled ? "on" : "off") + "）");
 			}
 			catch { }
@@ -219,14 +254,25 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		{
 			if (_context == null) { return; }
 			_showWaveText = BattlePanelKit.ReadBool(_context, KShowWaveText, true);
-			_textFormat = BattlePanelKit.ReadString(_context, KWaveTextFormat, "full");
-			if (_textFormat != "compact") { _textFormat = "full"; }
-			_barScale = BattlePanelKit.ReadInt(_context, KBarScale, 180, 100, 300);
+			if (!IsLocalEditActive(KWaveTextFormat))
+			{
+				_textFormat = BattlePanelKit.ReadString(_context, KWaveTextFormat, "full");
+				if (_textFormat != "compact") { _textFormat = "full"; }
+			}
+			if (!IsLocalEditActive(KBarScale)) { _barScale = BattlePanelKit.ReadInt(_context, KBarScale, 180, 100, 300); }
 			_showTicks = BattlePanelKit.ReadBool(_context, KShowTicks, true);
-			_posMode = BattlePanelKit.ReadString(_context, KPositionMode, "default");
-			if (_posMode != "left" && _posMode != "center" && _posMode != "custom") { _posMode = "default"; }
-			_posX = BattlePanelKit.ReadInt(_context, KCustomX, 2, 0, 100);
-			_posY = BattlePanelKit.ReadInt(_context, KCustomY, 94, 0, 100);
+			if (!IsLocalEditActive(KTickStyle))
+			{
+				_tickStyle = BattlePanelKit.ReadString(_context, KTickStyle, "flag");
+				if (_tickStyle != "bar") { _tickStyle = "flag"; }
+			}
+			if (!IsLocalEditActive(KPositionMode))
+			{
+				_posMode = BattlePanelKit.ReadString(_context, KPositionMode, "default");
+				if (_posMode != "custom") { _posMode = "default"; }
+			}
+			if (!IsLocalEditActive(KCustomX)) { _posX = BattlePanelKit.ReadInt(_context, KCustomX, 2, 0, 100); }
+			if (!IsLocalEditActive(KCustomY)) { _posY = BattlePanelKit.ReadInt(_context, KCustomY, 94, 0, 100); }
 		}
 		catch (Exception ex)
 		{
@@ -247,10 +293,56 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		catch { }
 	}
 
+	private readonly Dictionary<string, object> _pendingSaves = new Dictionary<string, object>();
+
+	private void MarkLocalEdit(params string[] keys)
+	{
+		double until = Time.GetTicksMsec() + 2000.0;
+		for (int i = 0; i < keys.Length; i++) { _localEditUntil[keys[i]] = until; }
+	}
+
+	private bool IsLocalEditActive(string key)
+	{
+		double until;
+		if (!_localEditUntil.TryGetValue(key, out until)) { return false; }
+		if (Time.GetTicksMsec() > until) { _localEditUntil.Remove(key); return false; }
+		return true;
+	}
+
 	private void SaveCfg(string key, object value)
 	{
-		try { BattlePanelKit.SaveOne(_context, key, value); }
+		try
+		{
+			if (BattlePanelKit.SaveOne(_context, key, value))
+			{
+				_pendingSaves.Remove(key);
+				return;
+			}
+		}
 		catch { }
+		_pendingSaves[key] = value;
+	}
+
+	private void FlushPendingSaves()
+	{
+		if (_pendingSaves.Count == 0) { return; }
+		try
+		{
+			Dictionary<string, object> copy = new Dictionary<string, object>(_pendingSaves);
+			if (BattlePanelKit.Save(_context, copy)) { _pendingSaves.Clear(); }
+		}
+		catch { }
+	}
+
+	private void SaveAllNow()
+	{
+		SaveCfg(KPositionMode, _posMode);
+		SaveCfg(KCustomX, _posX);
+		SaveCfg(KCustomY, _posY);
+		SaveCfg(KBarScale, _barScale);
+		SaveCfg(KWaveTextFormat, _textFormat);
+		SaveCfg(KTickStyle, _tickStyle);
+		FlushPendingSaves();
 	}
 
 	// ================================================================ 每帧
@@ -277,7 +369,11 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			ApplyBarGeometry();
 			ApplyPosition();
 
-			if ((_frame % OptionScanStride) == 0) { EnsureOptionButton(); }
+			if ((_frame % OptionScanStride) == 0)
+			{
+				EnsureOptionButton();
+				FlushPendingSaves();
+			}
 		}
 		catch (Exception ex)
 		{
@@ -341,6 +437,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		_mgr = null;
 		_row = null;
 		_waveLabel = null;
+		_appliedFontSize = -1;
 		_meter = null;
 		_bar = null;
 		_head = null;
@@ -349,6 +446,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		_progressText = null;
 		_tickRoot = null;
 		_ticks.Clear();
+		_tickRise.Clear();
 		_appliedBarWidth = -1;
 		_posApplied = false;
 		_appliedPosKey = "";
@@ -402,7 +500,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			if (_row == null || !GodotObject.IsInstanceValid(_row)) { return; }
 			if (_waveLabel != null && GodotObject.IsInstanceValid(_waveLabel) && _waveLabel.GetParent() == _row)
 			{
-				_waveLabel.Visible = _showWaveText;
+				SyncWaveLabelFont();
 				return;
 			}
 			Label l = new Label();
@@ -411,29 +509,86 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			l.MouseFilter = Control.MouseFilterEnum.Ignore;
 			l.VerticalAlignment = VerticalAlignment.Center;
 			l.HorizontalAlignment = HorizontalAlignment.Right;
-			// 字体/描边跟关卡名那一行完全一致（fzkt.ttf + 黑描边），避免"两种字体"
-			Label src = null;
-			try { src = _row.GetNodeOrNull<Label>("LevelNameLabel"); } catch { }
-			Font f = null;
-			try { if (src != null) { f = src.GetThemeFont("font"); } } catch { }
-			if (f != null) { l.AddThemeFontOverride("font", f); }
-			l.AddThemeFontSizeOverride("font_size", 16);
-			l.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f, 1f));
-			l.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 1f));
-			l.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 1f));
-			l.AddThemeConstantOverride("outline_size", 5);
-			l.AddThemeConstantOverride("shadow_offset_x", 2);
-			l.AddThemeConstantOverride("shadow_offset_y", 2);
+			ApplyWaveLabelFont(l);
 			l.Visible = _showWaveText;
 			_row.AddChild(l, false, Node.InternalMode.Disabled);
 			try { _row.MoveChild(l, 0); } catch { }
 			_waveLabel = l;
-			BattlePanelKit.Info("已插入波次消息 Label（关卡名称左侧）。");
 		}
 		catch (Exception ex)
 		{
 			SafeWarn("创建波次消息 Label 异常（已吞）：" + ex.Message);
 		}
+	}
+
+	private Label FindLevelNameLabel()
+	{
+		try { return (_row != null && GodotObject.IsInstanceValid(_row)) ? _row.GetNodeOrNull<Label>("LevelNameLabel") : null; }
+		catch { return null; }
+	}
+
+	private void ApplyWaveLabelFont(Label l)
+	{
+		if (l == null || !GodotObject.IsInstanceValid(l)) { return; }
+		Label src = FindLevelNameLabel();
+		int size = 16;
+		Font f = null;
+		if (src != null && GodotObject.IsInstanceValid(src))
+		{
+			try { size = src.GetThemeFontSize("font_size"); } catch { }
+			try { f = src.GetThemeFont("font"); } catch { }
+			if (size <= 0) { size = 16; }
+		}
+		if (f != null) { l.AddThemeFontOverride("font", f); }
+		l.AddThemeFontSizeOverride("font_size", size);
+		l.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f, 1f));
+		l.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 1f));
+		l.AddThemeColorOverride("font_shadow_color", new Color(0f, 0f, 0f, 1f));
+		l.AddThemeConstantOverride("outline_size", 5);
+		l.AddThemeConstantOverride("shadow_offset_x", 2);
+		l.AddThemeConstantOverride("shadow_offset_y", 2);
+		_appliedFontSize = size;
+	}
+
+	private void SyncWaveLabelFont()
+	{
+		try
+		{
+			Label src = FindLevelNameLabel();
+			if (src == null) { return; }
+			int size = 16;
+			try { size = src.GetThemeFontSize("font_size"); } catch { }
+			if (size <= 0) { size = 16; }
+			if (size == _appliedFontSize) { return; }
+			ApplyWaveLabelFont(_waveLabel);
+		}
+		catch { }
+	}
+
+	private Texture2D GetTickTexture()
+	{
+		if (_tickTexTried) { return _tickTex; }
+		_tickTexTried = true;
+		try
+		{
+			byte[] bytes = Convert.FromBase64String(TickFlagPngB64);
+			Image img = new Image();
+			Error err = img.LoadPngFromBuffer(bytes);
+			if (err == Error.Ok && !img.IsEmpty())
+			{
+				_tickTex = ImageTexture.CreateFromImage(img);
+				BattlePanelKit.Info("刻度贴图已从内嵌 base64 解码：" + img.GetWidth() + "×" + img.GetHeight());
+			}
+			else
+			{
+				SafeWarn("内嵌刻度贴图解码失败（err=" + err + "）⇒ 退化为绿色竖线。");
+			}
+		}
+		catch (Exception ex)
+		{
+			SafeWarn("内嵌刻度贴图异常（已吞，退化绿线）：" + ex.Message);
+		}
+		return _tickTex;
 	}
 
 	private void EnsureTickRoot()
@@ -464,7 +619,6 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		try
 		{
 			if (_waveLabel == null || !GodotObject.IsInstanceValid(_waveLabel)) { return; }
-			// IZM / Quiz 等"waveNum 不是波数"的玩法：不显示（否则显示的是脑子数）
 			bool show = _showWaveText && !IsNonWaveCounterMode();
 			if (_waveLabel.Visible != show) { _waveLabel.Visible = show; }
 			if (!show) { return; }
@@ -636,6 +790,14 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	}
 
 	/// <summary>按总波数在栏上均分画 `|`（每一小波一个刻度；波数变化时增删）。</summary>
+	/// <summary>
+	/// 按总波数在栏上画**绿色小旗**：**打完一波才升起**。
+	///   · 未完成：16px、灰绿、半透明（只露一小截，表示还没打过）；
+	///   · 已完成：40px、亮绿、不透明（旗杆压栏底，旗面高出栏顶 17px），约 0.3s 升起动画。
+	/// 判定：进度栏 `previewWave`（当前第 N 波）> 该刻度波号 ⇒ 升起。
+	/// 进度条 fill_mode=1（从右往左填）⇒ 第 i 个刻度（0 起）对应「第 i+1 波打完」的边界。
+	/// 取不到贴图时退化成居中绿线（不做升起动画）。
+	/// </summary>
 	private void ApplyTicks(int w)
 	{
 		try
@@ -648,10 +810,30 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			try { hideItems = (_meter != null && GodotObject.IsInstanceValid(_meter)) && _meter.hideItem; } catch { }
 			int want = (_showTicks && !hideItems && !IsNonWaveCounterMode()) ? Mathf.Clamp(total - 1, 0, 79) : 0;
 
+			if (!string.Equals(_appliedTickStyle, _tickStyle, StringComparison.Ordinal))
+			{
+				_appliedTickStyle = _tickStyle;
+				foreach (Control c in _ticks)
+				{
+					try
+					{
+						if (c != null && GodotObject.IsInstanceValid(c))
+						{
+							c.GetParent()?.RemoveChild(c);
+							c.QueueFree();
+						}
+					}
+					catch { }
+				}
+				_ticks.Clear();
+				_tickRise.Clear();
+			}
+
 			while (_ticks.Count > want)
 			{
-				Label old = _ticks[_ticks.Count - 1];
+				Control old = _ticks[_ticks.Count - 1];
 				_ticks.RemoveAt(_ticks.Count - 1);
+				if (_tickRise.Count > 0) { _tickRise.RemoveAt(_tickRise.Count - 1); }
 				try
 				{
 					if (old != null && GodotObject.IsInstanceValid(old))
@@ -662,31 +844,74 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 				}
 				catch { }
 			}
+
+			bool useFlag = !string.Equals(_tickStyle, "bar", StringComparison.Ordinal);
+			Texture2D tex = useFlag ? GetTickTexture() : null;
 			while (_ticks.Count < want)
 			{
-				Label t = new Label();
+				Control t;
+				if (!useFlag)
+				{
+					ColorRect bar = new ColorRect();
+					bar.Color = new Color(0.16f, 0.85f, 0.30f, 1f);
+					t = bar;
+				}
+				else if (tex != null)
+				{
+					TextureRect flag = new TextureRect();
+					flag.Texture = tex;
+					flag.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+					flag.StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered;
+					t = flag;
+				}
+				else
+				{
+					ColorRect line = new ColorRect();   // 兜底：细绿线
+					line.Color = new Color(0.25f, 0.92f, 0.36f, 0.9f);
+					t = line;
+				}
 				t.Name = TickNamePrefix + _ticks.Count;
-				t.Text = "|";
 				t.MouseFilter = Control.MouseFilterEnum.Ignore;
-				t.AddThemeFontSizeOverride("font_size", 14);
-				t.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f, 0.55f));
-				t.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 0.75f));
-				t.AddThemeConstantOverride("outline_size", 2);
 				_tickRoot.AddChild(t, false, Node.InternalMode.Disabled);
 				_ticks.Add(t);
+				_tickRise.Add(0f);   // 从"未升起"开始
 			}
 
 			if (want <= 0) { return; }
-			// ★ 刻度必须与**填充方向**一致：本作进度条是 `fill_mode = 1`（从右往左填），
-			//   所以第 i 个波次边界在 `W - usable*i/total`（从左往右数），不是 `usable*i/total`。
+
 			float usable = Mathf.Max(4f, w - 16f);
+			bool isFlag = useFlag && tex != null;
+			int current = 0;
+			try { if (_meter != null && GodotObject.IsInstanceValid(_meter)) { current = _meter.previewWave; } } catch { }
+
 			for (int i = 0; i < _ticks.Count; i++)
 			{
-				Label t = _ticks[i];
+				Control t = _ticks[i];
 				if (t == null || !GodotObject.IsInstanceValid(t)) { continue; }
 				float x = (w - 8f) - usable * (i + 1) / (float)total;
-				t.Position = new Vector2(x, 0f);
-				t.Size = new Vector2(6f, 22f);
+
+				if (!isFlag)
+				{
+					t.Position = new Vector2(x - 1.5f, (23f - 20f) * 0.5f);
+					t.Size = new Vector2(3f, 20f);
+					continue;
+				}
+
+				bool reached = current > (i + 1);
+				float cur = (i < _tickRise.Count) ? _tickRise[i] : 0f;
+				float tgt = reached ? 1f : 0f;
+				cur += (tgt - cur) * TickRiseLerp;
+				if (Mathf.Abs(tgt - cur) < 0.005f) { cur = tgt; }
+				if (i < _tickRise.Count) { _tickRise[i] = cur; }
+
+				float size = Mathf.Lerp(TickFlagSizeDown, TickFlagSize, cur);
+				// 未升起：整面缩在栏内（底边贴栏底）；升起：底边抬到栏内 14px ⇒ 旗面冒到栏顶之上
+				float bottom = Mathf.Lerp(23f, TickFlagBottomUp, cur);
+				t.Position = new Vector2(x - size * 0.5f, bottom - size);
+				t.Size = new Vector2(size, size);
+				// ★ 用户反馈「旗子怎么还带透明度」：不起用的旗子**只靠"小 + 低"区分**，
+				//   颜色一律纯绿不透明（不做 alpha / 灰蒙），保持和游戏原生旗子一致的实心观感。
+				if (t.Modulate != Colors.White) { t.Modulate = Colors.White; }
 			}
 		}
 		catch { }
@@ -719,22 +944,12 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			float y;
 			switch (_posMode)
 			{
-			case "left":
-				x = vp.X * 0.02f;
-				y = vp.Y - rowH - 6f;
-				break;
-			case "center":
-				x = (vp.X - rowW) * 0.5f;
-				y = vp.Y - rowH - 6f;
-				break;
 			case "custom":
 				x = vp.X * Mathf.Clamp(_posX, 0, 100) / 100f;
 				y = vp.Y * Mathf.Clamp(_posY, 0, 100) / 100f;
 				break;
 			default:
-				// 原场景：anchor=1.007、offset_top=-30、offset_right=-262.56，且 meter 宽度为 0
-				// ⇒ 进度栏实际右边缘 = 1.007*vw - 262.56 + 158 = 1.007*vw - 104.56，底边 = vh
-				x = vp.X * 1.007f - 104.56f - rowW;
+				x = vp.X - rowW;
 				y = vp.Y - rowH;
 				break;
 			}
@@ -780,10 +995,37 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			BattlePanelKit.CollectOptionDialogs(_tree, opts);
 			for (int i = 0; i < opts.Count; i++)
 			{
-				// 2026-10-20 实机反馈：新建列会把整页撑出 1080 宽的视口、按钮被裁到屏幕外
-				// ⇒ 改为放进**原生列底部的共用工具行**（不增加宽度、必然可见）。
-				BattlePanelKit.EnsureToolbarButton(opts[i], OptBtnName,
-					"波次栏位置", "设置「波次消息 + 进度栏」的位置与长度", OpenPanel);
+				// ★ 用户要求：与「时停·卡槽触发面板 / CD开关设置面板 / 改键面板」竖排同一列（ModCol4）。
+				Node opt = opts[i];
+				if (opt == null || !GodotObject.IsInstanceValid(opt)) { continue; }
+				VBoxContainer col = BattleOptionColumns.GetOrCreateColumn(opt,
+					OptionColumnName, BattleOptionColumns.TimeStopColMinWidth);
+				if (col == null || !GodotObject.IsInstanceValid(col)) { continue; }
+				if (col.FindChild(OptBtnName, true, false) != null) { continue; }   // 幂等
+
+				Button stale = opt.FindChild(OptBtnName, true, false) as Button;
+				if (stale != null && GodotObject.IsInstanceValid(stale))
+				{
+					try { stale.GetParent()?.RemoveChild(stale); } catch { }
+					try { stale.QueueFree(); } catch { }
+				}
+
+				Button b = new Button();
+				b.Name = OptBtnName;
+				b.Text = "波次栏位置";
+				b.TooltipText = "设置「波次消息 + 进度栏」的位置与长度";
+				b.AddThemeFontSizeOverride("font_size", 14);
+				b.CustomMinimumSize = new Vector2(0f, 40f);
+				b.ProcessMode = Node.ProcessModeEnum.Always;
+				BattleOptionColumns.ApplyDarkButtonStyle(b);
+				b.Pressed += () =>
+				{
+					try { OpenPanel(); }
+					catch (Exception exOpen) { SafeWarn("打开位置面板异常（已吞）：" + exOpen.Message); }
+				};
+				col.AddChild(b, false, Node.InternalMode.Disabled);
+				try { BattleOptionColumns.NormalizeOrder(opt); } catch { }
+				BattlePanelKit.Info("已在战斗设置页 ModCol4 列注入按钮：波次栏位置");
 			}
 		}
 		catch (Exception ex)
@@ -796,19 +1038,6 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		}
 	}
 
-	/// <summary>是否多人模式（多人时设置页不暂停，按钮注入判据要放宽）。</summary>
-	private static bool IsMultiplayerMode()
-	{
-		try { return Global.IsMultiplayerMode; }
-		catch { return false; }
-	}
-
-	/// <summary>
-	/// 是否是"波次数字语义不是波数"的特殊玩法：IZM / IZM2 把 `waveNum` 当**脑子数**、
-	/// Quiz 当 Brain 计数（`TowerDefenseBattleProcessIZM.cs:388` / `...Quiz.cs:816`）。
-	/// 这些模式下"总 N 波 / 当前第 M 波"会显示成没有意义的东西 ⇒ 本 Mod 主动**不显示**
-	/// （进度栏拉长与 `|` 刻度也一并关掉，因为刻度是按波数均分的）。
-	/// </summary>
 	private bool IsNonWaveCounterMode()
 	{
 		try
@@ -825,6 +1054,13 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		catch { return false; }
 	}
 
+	/// <summary>是否多人模式（多人时设置页不暂停，按钮注入判据要放宽）。</summary>
+	private static bool IsMultiplayerMode()
+	{
+		try { return Global.IsMultiplayerMode; }
+		catch { return false; }
+	}
+
 	// ================================================================ 位置面板
 
 	private void OpenPanel()
@@ -833,10 +1069,9 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		{
 			Node root = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree.Root : null;
 			if (root == null) { return; }
-			if (_panel == null || _panel.Root == null || !GodotObject.IsInstanceValid(_panel.Root))
-			{
-				BuildPanel(root);
-			}
+			// 每次打开都重建：面板里既有位置也有文字样式，重建才能回填最新值
+			BattlePanelKit.DestroyPanel(ref _panel);
+			BuildPanel(root);
 			if (_panel == null || _panel.Root == null || !GodotObject.IsInstanceValid(_panel.Root)) { return; }
 			SyncPanelFromConfig();
 			_panel.Root.Visible = true;
@@ -852,6 +1087,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	{
 		try
 		{
+			SaveAllNow();
 			if (_panel != null && _panel.Root != null && GodotObject.IsInstanceValid(_panel.Root))
 			{
 				_panel.Root.Visible = false;
@@ -869,11 +1105,11 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			VBoxContainer body = p.Body;
 			const float innerW = 430f;
 
-			BattlePanelKit.AddLine(body, "整块（波次消息 + 关卡名 + 进度栏）一起移动；改动立即生效，点「确定」保存并关闭。", 13,
+			BattlePanelKit.AddLine(body, "整块（波次消息 + 关卡名 + 进度栏）一起移动；位置、长度、波次消息样式与旗帜样式都在这里改，改动立即生效并保存。", 13,
 				new Color(0.74f, 0.80f, 0.88f, 1f), innerW);
 
-			BattlePanelKit.AddLine(body, "位置预设", 14, new Color(0.82f, 0.92f, 0.86f, 1f), innerW, wrap: false);
-			string[] presetLabels = { "右下（游戏原位置）", "左下", "中下（居中）", "自定义（用下面 X / Y）" };
+			BattlePanelKit.AddLine(body, "位置方式", 14, new Color(0.82f, 0.92f, 0.86f, 1f), innerW, wrap: false);
+			string[] presetLabels = { "原版位置", "自定义（用下面 X / Y）" };
 			int sel = (int)PresetIndex(_posMode);
 			_ddPreset = BattlePanelKit.AddDropdown(body, presetLabels, sel, OnPresetChanged);
 
@@ -888,18 +1124,34 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 				OnLenChanged, out _lbLen, innerW);
 			_slLen = sl;
 
+			BattlePanelKit.AddLine(body, "波次消息样式", 14, new Color(0.82f, 0.92f, 0.86f, 1f), innerW, wrap: false);
+			string[] styleLabels = { "显示汉字（总 10 波 · 当前第 3 波）", "不显示汉字（3/10）" };
+			int styleSel = string.Equals(_textFormat, "compact", StringComparison.Ordinal) ? 1 : 0;
+			BattlePanelKit.AddDropdown(body, styleLabels, styleSel, idx =>
+			{
+				_textFormat = (idx == 1) ? "compact" : "full";
+				MarkLocalEdit(KWaveTextFormat);
+				SaveCfg(KWaveTextFormat, _textFormat);
+				if (_waveLabel != null && GodotObject.IsInstanceValid(_waveLabel))
+				{
+					UpdateWaveLabel();
+				}
+			});
+
+			BattlePanelKit.AddLine(body, "波次旗帜样式", 14, new Color(0.82f, 0.92f, 0.86f, 1f), innerW, wrap: false);
+			string[] tickLabels = { "绿旗", "绿色竖线（|）" };
+			int tickSel = string.Equals(_tickStyle, "bar", StringComparison.Ordinal) ? 1 : 0;
+			BattlePanelKit.AddDropdown(body, tickLabels, tickSel, idx =>
+			{
+				_tickStyle = (idx == 1) ? "bar" : "flag";
+				MarkLocalEdit(KTickStyle);
+				SaveCfg(KTickStyle, _tickStyle);
+				if (_meter != null && GodotObject.IsInstanceValid(_meter)) { ApplyBarGeometry(); }
+			});
+
 			HBoxContainer footer = new HBoxContainer();
 			footer.AddThemeConstantOverride("separation", 8);
 			body.AddChild(footer, false, Node.InternalMode.Disabled);
-			BattlePanelKit.AddButton(footer, "确定", () =>
-			{
-				// 值已在拖动时即时保存；这里只做"落库 + 收起"（保证即使中途改失败也再写一次）
-				SaveCfg(KPositionMode, _posMode);
-				SaveCfg(KCustomX, _posX);
-				SaveCfg(KCustomY, _posY);
-				SaveCfg(KBarScale, _barScale);
-				ClosePanel();
-			});
 			BattlePanelKit.AddButton(footer, "关闭", ClosePanel);
 
 			_panel = p;
@@ -914,24 +1166,12 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 
 	private static int PresetIndex(string mode)
 	{
-		switch (mode)
-		{
-		case "left": return 1;
-		case "center": return 2;
-		case "custom": return 3;
-		default: return 0;
-		}
+		return string.Equals(mode, "custom", StringComparison.Ordinal) ? 1 : 0;
 	}
 
 	private static string PresetValue(int idx)
 	{
-		switch (idx)
-		{
-		case 1: return "left";
-		case 2: return "center";
-		case 3: return "custom";
-		default: return "default";
-		}
+		return idx == 1 ? "custom" : "default";
 	}
 
 	/// <summary>打开面板时按当前配置回填控件（回填期间 `_panelSync` 挡住回调）。</summary>
@@ -962,8 +1202,11 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		{
 			if (_panelSync) { return; }
 			_posMode = PresetValue(idx);
+			MarkLocalEdit(KPositionMode);
 			SaveCfg(KPositionMode, _posMode);
 			_posApplied = false;
+			_appliedPosKey = "";
+			ApplyPosition();
 		}
 		catch { }
 	}
@@ -977,20 +1220,21 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			{
 				_posX = iv;
 				if (_lbX != null && GodotObject.IsInstanceValid(_lbX)) { _lbX.Text = iv + "%"; }
-				if (!_panelSync) { SaveCfg(KCustomX, _posX); }
+				if (!_panelSync) { MarkLocalEdit(KCustomX); SaveCfg(KCustomX, _posX); }
 			}
 			else
 			{
 				_posY = iv;
 				if (_lbY != null && GodotObject.IsInstanceValid(_lbY)) { _lbY.Text = iv + "%"; }
-				if (!_panelSync) { SaveCfg(KCustomY, _posY); }
+				if (!_panelSync) { MarkLocalEdit(KCustomY); SaveCfg(KCustomY, _posY); }
 			}
 			if (!_panelSync && _posMode != "custom")
 			{
 				// 直接拖 X/Y 视为"改用自定义位置"（下拉同步到第 4 项）
 				_posMode = "custom";
+				MarkLocalEdit(KPositionMode);
 				SaveCfg(KPositionMode, _posMode);
-				if (_ddPreset != null && GodotObject.IsInstanceValid(_ddPreset)) { _ddPreset.Selected = 3; }
+				if (_ddPreset != null && GodotObject.IsInstanceValid(_ddPreset)) { _ddPreset.Selected = 1; }
 			}
 			_posApplied = false;
 		}
@@ -1004,6 +1248,7 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			if (_panelSync) { return; }
 			_barScale = Mathf.Clamp(Mathf.RoundToInt((float)v), 100, 300);
 			if (_lbLen != null && GodotObject.IsInstanceValid(_lbLen)) { _lbLen.Text = _barScale + "%"; }
+			MarkLocalEdit(KBarScale);
 			SaveCfg(KBarScale, _barScale);
 			_posApplied = false;
 		}
