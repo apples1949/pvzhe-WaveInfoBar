@@ -206,9 +206,14 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			catch { }
 			// ★ 这一行**不受 enableLog 门控**：每次启动只打 1 行，用来在日志里确认
 			//   "本 Mod 真的被加载并且入口跑起来了"（排查"装了没反应"时最省事的一条证据）。
+			// ⚠️ 版本号**必须**从清单读（context.ModVersion），不能硬编码：
+			//   曾硬编码成 v1.8.0，而 mod.json 已是 1.9.2 ⇒ 日志显示旧版本，
+			//   排查时会误判成"推的是旧包/程序集被复用"（拿旧日志判新代码的经典坑）。
 			try
 			{
-				GD.Print("[WaveInfoBar] v1.8.0 ready（波次消息 + 旗帜刻度 + 位置与样式面板；enableLog="
+				string ver = _context?.ModVersion;
+				if (string.IsNullOrWhiteSpace(ver)) { ver = "?"; }
+				GD.Print("[WaveInfoBar] v" + ver + " ready（波次消息 + 旗帜刻度 + 位置与样式面板；enableLog="
 					+ (BattlePanelKit.LogEnabled ? "on" : "off") + "）");
 			}
 			catch { }
