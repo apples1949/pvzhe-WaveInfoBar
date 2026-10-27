@@ -105,6 +105,21 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	/// <summary>扫描节流：设置页按钮每 N 帧查一次。</summary>
 	private const int OptionScanStride = 6;
 
+	/// <summary>
+	/// ★ v1.9.4：**从宿主配置重读内存镜像**的轮询节流（每 10 帧一次 ≈ 0.17s）。
+	/// 为什么要轮询：旧实现里「配置页 → 屏幕」只有宿主 `Settings.Changed` 事件这一条通道，
+	/// 而重读又按单键门控（2 秒本地编辑窗口）⇒ 那一次事件一旦被窗口吃掉，就**再没有任何
+	/// 时机重读**（Initialize 早跑过了、事件不会重发）⇒ 内存值永久停在旧值，只有重启游戏才生效。
+	/// 这就是玩家反馈的「配置页设置绿色竖线无效、只在游戏里设置才有效」。
+	/// 每 10 帧读 9 个标量 = 每帧不到 1 次字典查找，开销可忽略。
+	/// </summary>
+	private const int SettingsResyncStride = 10;
+
+	/// <summary>波次旗帜样式的三态取值（`tickStyle` 的合法值，与 mod.json 的 options 一一对应）。</summary>
+	private const string TickStyleFlag = "flag";
+	private const string TickStyleBar = "bar";
+	private const string TickStyleNone = "none";
+
 	// ================================================================ 运行状态
 
 	private XWModRuntimeContext _context;
@@ -126,7 +141,13 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	private int _posX = 2;
 	private int _posY = 94;
 	private int _appliedFontSize = -1;
-	private readonly Dictionary<string, double> _localEditUntil = new Dictionary<string, double>();
+	/// <summary>
+	/// 上次从宿主读到的值（原样字符串）。**这是"回声 vs 外部修改"的唯一判据**：
+	///   · 宿主值 == 上次读到的值 ⇒ 宿主没变，**别拿它覆盖本地刚写入的新值**（旧实现用
+	///     `MarkLocalEdit` 的 2 秒窗口挡这件事，窗口一过/事件一丢就永久丢值，v1.9.4 换成本判据）；
+	///   · 宿主值 != 上次读到的值 ⇒ 一定是外部（配置页/别处）真的改了 ⇒ 立刻采纳。
+	/// </summary>
+	private readonly Dictionary<string, string> _hostSeen = new Dictionary<string, string>(StringComparer.Ordinal);
 
 	// 当前 UI 缓存（每关重建，靠实例 id 失效）
 	private TowerDefenseProgressManager _mgr;
@@ -156,6 +177,8 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 	// 面板
 	private BattlePanelKit.Panel _panel;
 	private OptionButton _ddPreset;
+	/// <summary>面板里的「波次旗帜样式」下拉（三态：绿旗 / 绿色竖线 / 关闭）。</summary>
+	private OptionButton _ddTick;
 	private HSlider _slX;
 	private HSlider _slY;
 	private HSlider _slLen;
@@ -253,31 +276,33 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 
 	// ================================================================ 配置
 
+	/// <summary>
+	/// 从宿主配置重读内存镜像。**v1.9.4 起这是权威路径**：`OnFrame` 每
+	/// <see cref="SettingsResyncStride"/> 帧无条件调一次（宿主 `Settings.Changed` 仍保留做快路径）。
+	///
+	/// ── 为什么不能只靠 `Changed`（玩家反馈「配置页设置绿色竖线无效、只在游戏里设置才有效」的根因链）──
+	///   ① 旧实现里"配置页 → 屏幕"只有 `Settings.Changed` 这一条通道；
+	///   ② 每次重读又按单键门控（`IsLocalEditActive` 的 2 秒本地编辑窗口，由 `MarkLocalEdit` 写）；
+	///   ③ 那一次事件一旦落在窗口内被跳过，`ReloadSettings` 就**再也不会被调用**
+	///      （Initialize 早跑过、宿主不会重发事件）⇒ 内存值永久停在旧值，只有重启游戏才生效；
+	///   ④ 更糟：`ClosePanel()` → `SaveAllNow()` 会把这份**过期的内存值**写回磁盘，
+	///      把玩家在配置页的选择彻底覆盖掉。
+	/// ⇒ 现在改成「每 10 帧轮询 + `_hostSeen` 判回声 / 判外部修改」：任何一条通道丢事件都能自愈。
+	/// </summary>
 	private void ReloadSettings()
 	{
 		try
 		{
 			if (_context == null) { return; }
 			_showWaveText = BattlePanelKit.ReadBool(_context, KShowWaveText, true);
-			if (!IsLocalEditActive(KWaveTextFormat))
-			{
-				_textFormat = BattlePanelKit.ReadString(_context, KWaveTextFormat, "full");
-				if (_textFormat != "compact") { _textFormat = "full"; }
-			}
-			if (!IsLocalEditActive(KBarScale)) { _barScale = BattlePanelKit.ReadInt(_context, KBarScale, 180, 100, 300); }
+			SyncStringFromHost(KWaveTextFormat, NormalizeTextFormat(BattlePanelKit.ReadString(_context, KWaveTextFormat, "full")), ref _textFormat);
+			_barScale = SyncIntFromHost(KBarScale, BattlePanelKit.ReadInt(_context, KBarScale, 180, 100, 300), _barScale);
 			_showTicks = BattlePanelKit.ReadBool(_context, KShowTicks, true);
-			if (!IsLocalEditActive(KTickStyle))
-			{
-				_tickStyle = BattlePanelKit.ReadString(_context, KTickStyle, "flag");
-				if (_tickStyle != "bar") { _tickStyle = "flag"; }
-			}
-			if (!IsLocalEditActive(KPositionMode))
-			{
-				_posMode = BattlePanelKit.ReadString(_context, KPositionMode, "default");
-				if (_posMode != "custom") { _posMode = "default"; }
-			}
-			if (!IsLocalEditActive(KCustomX)) { _posX = BattlePanelKit.ReadInt(_context, KCustomX, 2, 0, 100); }
-			if (!IsLocalEditActive(KCustomY)) { _posY = BattlePanelKit.ReadInt(_context, KCustomY, 94, 0, 100); }
+			SyncTickStyleFromHost(NormalizeTickStyle(BattlePanelKit.ReadString(_context, KTickStyle, TickStyleFlag)));
+			SyncStringFromHost(KPositionMode, NormalizePositionMode(BattlePanelKit.ReadString(_context, KPositionMode, "default")), ref _posMode);
+			_posX = SyncIntFromHost(KCustomX, BattlePanelKit.ReadInt(_context, KCustomX, 2, 0, 100), _posX);
+			_posY = SyncIntFromHost(KCustomY, BattlePanelKit.ReadInt(_context, KCustomY, 94, 0, 100), _posY);
+			BattlePanelKit.LogEnabled = BattlePanelKit.ReadBool(_context, KEnableLog, false);
 		}
 		catch (Exception ex)
 		{
@@ -285,33 +310,120 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		}
 	}
 
-	/// <summary>宿主配置页改了值（applyMode=immediate）⇒ 重读内存镜像。</summary>
+	// ── 宿主值同步：回声 vs 外部修改（判定见 _hostSeen）──────────────────
+
+	/// <summary>同步一个字符串键：宿主值没变 ⇒ 不动（那是我们本地写入的延迟回声）；变了 ⇒ 采纳。</summary>
+	private void SyncStringFromHost(string key, string hostValue, ref string field)
+	{
+		try
+		{
+			string seen;
+			bool hasSeen = _hostSeen.TryGetValue(key, out seen);
+			_hostSeen[key] = hostValue ?? "";
+			// 本地改动还没写进宿主（SaveCfg 失败过、在待保存队列里）⇒ 本地值更新，别被宿主的旧值盖掉。
+			if (_pendingSaves.ContainsKey(key)) { return; }
+			if (!hasSeen) { field = hostValue; return; }
+			if (string.Equals(seen, hostValue, StringComparison.Ordinal)) { return; }
+			field = hostValue;
+		}
+		catch { }
+	}
+
+	/// <summary>同步一个整数键（同判定，用字符串形态比较）。返回应当采用的值。</summary>
+	private int SyncIntFromHost(string key, int hostValue, int current)
+	{
+		try
+		{
+			string seen;
+			bool hasSeen = _hostSeen.TryGetValue(key, out seen);
+			string now = hostValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+			_hostSeen[key] = now;
+			if (_pendingSaves.ContainsKey(key)) { return current; }
+			if (!hasSeen) { return hostValue; }
+			if (string.Equals(seen, now, StringComparison.Ordinal)) { return current; }
+			return hostValue;
+		}
+		catch { return current; }
+	}
+
+	/// <summary>同步 `tickStyle`（三态）：宿主值真的变了才走 <see cref="SetTickStyle"/> 重建刻度。</summary>
+	private void SyncTickStyleFromHost(string hostValue)
+	{
+		try
+		{
+			string seen;
+			bool hasSeen = _hostSeen.TryGetValue(KTickStyle, out seen);
+			_hostSeen[KTickStyle] = hostValue ?? TickStyleFlag;
+			if (_pendingSaves.ContainsKey(KTickStyle)) { return; }
+			if (hasSeen && string.Equals(seen, hostValue, StringComparison.Ordinal)) { return; }
+			SetTickStyle(hostValue, "宿主配置");
+		}
+		catch { }
+	}
+
+	/// <summary>
+	/// 设置波次旗帜样式（`flag` / `bar` / `none`）并让刻度**立刻**按新样式重建（幂等）。
+	/// ★ 显式把 `_appliedTickStyle` 置空：旧实现只"值变了才重建"，一旦哪条路径没把新值
+	///   送进 `ApplyTicks`，旧节点（绿旗/绿线）就一直留着、且没有任何代码再去删它（"只建不删"）。
+	/// 每次真正变更**无条件**打一行日志（不受 enableLog 门控）——实机确认「配置页改完到底有没有进去」
+	/// 只需要看 godot.log 这一行，不必先打开诊断日志。
+	/// </summary>
+	private void SetTickStyle(string next, string source)
+	{
+		try
+		{
+			next = NormalizeTickStyle(next);
+			bool changed = !string.Equals(_tickStyle, next, StringComparison.Ordinal);
+			_tickStyle = next;
+			if (!changed) { return; }
+			_appliedTickStyle = "";
+			GD.Print("[WaveInfoBar] 波次旗帜样式 → " + next + "（" + source + "）。");
+		}
+		catch { }
+	}
+
+	/// <summary>三态归一：`bar` / `none` 之外一律按绿旗处理（避免旧写法 `!= "bar" → flag` 把 none 吃掉）。</summary>
+	private static string NormalizeTickStyle(string raw)
+	{
+		if (string.Equals(raw, TickStyleBar, StringComparison.Ordinal)) { return TickStyleBar; }
+		if (string.Equals(raw, TickStyleNone, StringComparison.Ordinal)) { return TickStyleNone; }
+		return TickStyleFlag;
+	}
+
+	private static string NormalizeTextFormat(string raw)
+	{
+		return string.Equals(raw, "compact", StringComparison.Ordinal) ? "compact" : "full";
+	}
+
+	private static string NormalizePositionMode(string raw)
+	{
+		return string.Equals(raw, "custom", StringComparison.Ordinal) ? "custom" : "default";
+	}
+
+	/// <summary>宿主配置页改了值（applyMode=immediate）⇒ 立刻重读（权威逻辑在 <see cref="ReloadSettings"/>）。</summary>
 	private void OnSettingsChanged(IReadOnlyList<string> keys)
 	{
 		try
 		{
 			ReloadSettings();
-			BattlePanelKit.LogEnabled = BattlePanelKit.ReadBool(_context, KEnableLog, false);
 			_posApplied = false;   // 位置/长度都重算一次
-			BattlePanelKit.Info("配置已更新（宿主配置页）：posMode=" + _posMode + ", scale=" + _barScale + "%");
+			BattlePanelKit.Info("配置已更新（宿主配置页）：tickStyle=" + _tickStyle + ", posMode=" + _posMode + ", scale=" + _barScale + "%");
 		}
 		catch { }
 	}
 
 	private readonly Dictionary<string, object> _pendingSaves = new Dictionary<string, object>();
 
+	/// <summary>
+	/// **已废弃（v1.9.4 保留空实现，别再加回逻辑）**：
+	/// 旧版用它开一个"2 秒内忽略宿主回推旧值"的窗口来防回声。问题在于它是**按时间**判定的 ——
+	/// 窗口内真实的外部修改（配置页保存）也会被一起吃掉，而且吃掉的这次**不会重试**，
+	/// 造成"配置页设置了但永远不生效、只有重启才生效"。现在回声判定改由
+	/// <see cref="_hostSeen"/> 按**值**判定（宿主值没变=回声，变了=外部修改），既不会误吞外部修改，
+	/// 也不需要时间窗口。这里的调用点全部保留，只是不再产生任何效果。
+	/// </summary>
 	private void MarkLocalEdit(params string[] keys)
 	{
-		double until = Time.GetTicksMsec() + 2000.0;
-		for (int i = 0; i < keys.Length; i++) { _localEditUntil[keys[i]] = until; }
-	}
-
-	private bool IsLocalEditActive(string key)
-	{
-		double until;
-		if (!_localEditUntil.TryGetValue(key, out until)) { return false; }
-		if (Time.GetTicksMsec() > until) { _localEditUntil.Remove(key); return false; }
-		return true;
 	}
 
 	private void SaveCfg(string key, object value)
@@ -339,24 +451,54 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		catch { }
 	}
 
+	/// <summary>
+	/// 关面板时的"整批回写"。
+	/// ★ v1.9.4：**只回写真正被本地改过的键**（内存值 != 上次从宿主读到的值）。
+	///   旧实现无条件写全部 6 个键 ⇒ 只要内存里有一项是过期值（例如配置页刚保存、而事件被
+	///   2 秒窗口挡掉），就会把玩家的配置页选择**写回旧值覆盖掉**，这是"配置页设置永远不生效"的最后一环。
+	/// </summary>
 	private void SaveAllNow()
 	{
-		SaveCfg(KPositionMode, _posMode);
-		SaveCfg(KCustomX, _posX);
-		SaveCfg(KCustomY, _posY);
-		SaveCfg(KBarScale, _barScale);
-		SaveCfg(KWaveTextFormat, _textFormat);
-		SaveCfg(KTickStyle, _tickStyle);
+		SaveIfLocalChanged(KPositionMode, _posMode, _posMode);
+		SaveIfLocalChanged(KCustomX, _posX, _posX.ToString(System.Globalization.CultureInfo.InvariantCulture));
+		SaveIfLocalChanged(KCustomY, _posY, _posY.ToString(System.Globalization.CultureInfo.InvariantCulture));
+		SaveIfLocalChanged(KBarScale, _barScale, _barScale.ToString(System.Globalization.CultureInfo.InvariantCulture));
+		SaveIfLocalChanged(KWaveTextFormat, _textFormat, _textFormat);
+		SaveIfLocalChanged(KTickStyle, _tickStyle, _tickStyle);
 		FlushPendingSaves();
+	}
+
+	/// <summary>宿主里已经是这个值 ⇒ 不回写（避免用快照覆盖掉外部刚保存的值）。</summary>
+	private void SaveIfLocalChanged(string key, object value, string textValue)
+	{
+		try
+		{
+			string seen;
+			if (_hostSeen.TryGetValue(key, out seen) && string.Equals(seen, textValue ?? "", StringComparison.Ordinal)) { return; }
+		}
+		catch { }
+		SaveCfg(key, value);
 	}
 
 	// ================================================================ 每帧
 
 	private void OnFrame()
 	{
+		// ★ v1.9.3：配置页「关于」栏收款码（共享组件 SponsorQrInjector.cs；内部 30 帧节流 +
+		//   插好后停止全树查找）。⚠️ 必须放在下面「不在战斗就 return」之前，否则打开配置页
+		//   （非战斗场景）时永远跑不到这里，收款码就不会出现。
+		//   modName 必须与 mod.json 的 name 逐字一致 —— 注入器靠「该富文本是否以本 Mod 名开头」
+		//   判定归属，不匹配就一个字都不会插。
+		try { SponsorQrInjector.Tick(Engine.GetMainLoop() as SceneTree, "波次进度栏", _context?.PackageRoot ?? "", "Resources/SponsorQR.png"); } catch { }
+
 		try
 		{
 			_frame++;
+			// ★ v1.9.4：**每 10 帧无条件重读宿主配置**（不依赖 Settings.Changed、也不在"不在战斗就
+			//   return"之后）—— 配置页保存后哪怕事件丢了、或当时还没进战斗，下一帧起内存值就是对的，
+			//   进 1-1 第一帧就能按新样式建刻度。
+			if ((_frame % SettingsResyncStride) == 0) { ReloadSettings(); }
+
 			TowerDefenseProgressManager mgr = ResolveManager();
 			if (mgr == null)
 			{
@@ -452,6 +594,9 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		_tickRoot = null;
 		_ticks.Clear();
 		_tickRise.Clear();
+		// ★ v1.9.4：新战斗/新实例时让"已应用样式"失效 ⇒ 下一帧必然按当前样式重建，
+		//   不会因为缓存值与新值相同而把上一次的旧节点当成"已经是对的"（换关后残留绿旗的隐患）。
+		_appliedTickStyle = "";
 		_appliedBarWidth = -1;
 		_posApplied = false;
 		_appliedPosKey = "";
@@ -813,7 +958,10 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			// 特殊玩法（IZM/Quiz）里 waveNum 不是波数 ⇒ 不画刻度；游戏自己隐藏道具时也不画
 			bool hideItems = false;
 			try { hideItems = (_meter != null && GodotObject.IsInstanceValid(_meter)) && _meter.hideItem; } catch { }
-			int want = (_showTicks && !hideItems && !IsNonWaveCounterMode()) ? Mathf.Clamp(total - 1, 0, 79) : 0;
+			// ★ v1.9.4 三态：`none` = 既不要绿线也不要绿旗（波次文字与进度条本身不受影响）
+			//   ⇒ 只要 style=none 就把目标数量压成 0，下面"删到 want"的循环会把已有刻度全部清掉。
+			bool styleNone = string.Equals(_tickStyle, TickStyleNone, StringComparison.Ordinal);
+			int want = (_showTicks && !hideItems && !styleNone && !IsNonWaveCounterMode()) ? Mathf.Clamp(total - 1, 0, 79) : 0;
 
 			if (!string.Equals(_appliedTickStyle, _tickStyle, StringComparison.Ordinal))
 			{
@@ -850,7 +998,9 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 				catch { }
 			}
 
-			bool useFlag = !string.Equals(_tickStyle, "bar", StringComparison.Ordinal);
+			// ★ v1.9.4 三态：只有 `flag` 用旗子贴图；`bar` 用细绿线；`none` 上面已经把 want 压成 0。
+			//   旧写法 `useFlag = _tickStyle != "bar"` 会在 style=none 时回落成"建绿旗"（"关闭"被悄悄改回 flag）。
+			bool useFlag = string.Equals(_tickStyle, TickStyleFlag, StringComparison.Ordinal);
 			Texture2D tex = useFlag ? GetTickTexture() : null;
 			while (_ticks.Count < want)
 			{
@@ -1144,12 +1294,12 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			});
 
 			BattlePanelKit.AddLine(body, "波次旗帜样式", 14, new Color(0.82f, 0.92f, 0.86f, 1f), innerW, wrap: false);
-			string[] tickLabels = { "绿旗", "绿色竖线（|）" };
-			int tickSel = string.Equals(_tickStyle, "bar", StringComparison.Ordinal) ? 1 : 0;
-			BattlePanelKit.AddDropdown(body, tickLabels, tickSel, idx =>
+			// ★ v1.9.4：三态（关闭 = 不显示绿线也不显示绿旗，波次文字与进度条不受影响）
+			string[] tickLabels = { "绿旗", "绿色竖线（|）", "关闭（不显示绿线/绿旗）" };
+			int tickSel = TickStyleIndex(_tickStyle);
+			_ddTick = BattlePanelKit.AddDropdown(body, tickLabels, tickSel, idx =>
 			{
-				_tickStyle = (idx == 1) ? "bar" : "flag";
-				MarkLocalEdit(KTickStyle);
+				SetTickStyle(TickStyleValue(idx), "游戏内面板");
 				SaveCfg(KTickStyle, _tickStyle);
 				if (_meter != null && GodotObject.IsInstanceValid(_meter)) { ApplyBarGeometry(); }
 			});
@@ -1179,6 +1329,22 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 		return idx == 1 ? "custom" : "default";
 	}
 
+	/// <summary>三态 → 面板下拉索引（0 绿旗 / 1 绿色竖线 / 2 关闭）。</summary>
+	private static int TickStyleIndex(string style)
+	{
+		if (string.Equals(style, TickStyleBar, StringComparison.Ordinal)) { return 1; }
+		if (string.Equals(style, TickStyleNone, StringComparison.Ordinal)) { return 2; }
+		return 0;
+	}
+
+	/// <summary>面板下拉索引 → 三态值（越界一律绿旗，不做"非 bar 即 flag"式的隐式回落）。</summary>
+	private static string TickStyleValue(int idx)
+	{
+		if (idx == 1) { return TickStyleBar; }
+		if (idx == 2) { return TickStyleNone; }
+		return TickStyleFlag;
+	}
+
 	/// <summary>打开面板时按当前配置回填控件（回填期间 `_panelSync` 挡住回调）。</summary>
 	private void SyncPanelFromConfig()
 	{
@@ -1189,6 +1355,10 @@ public sealed partial class WaveInfoBarEntry : IXWModRuntimeEntry
 			if (_ddPreset != null && GodotObject.IsInstanceValid(_ddPreset))
 			{
 				_ddPreset.Selected = PresetIndex(_posMode);
+			}
+			if (_ddTick != null && GodotObject.IsInstanceValid(_ddTick))
+			{
+				_ddTick.Selected = TickStyleIndex(_tickStyle);
 			}
 			if (_slX != null && GodotObject.IsInstanceValid(_slX)) { _slX.SetValueNoSignal(_posX); }
 			if (_slY != null && GodotObject.IsInstanceValid(_slY)) { _slY.SetValueNoSignal(_posY); }
